@@ -10,316 +10,138 @@ const router = express.Router();
 // Apply authentication to all dashboard routes
 router.use(authenticateToken);
 
-// Helper function to safely get tag ObjectIds from tag names
-async function getTagObjectIds(
-  tagNames: string[],
-  userObjectId: mongoose.Types.ObjectId
-) {
-  if (!tagNames || tagNames.length === 0) return [];
-
-  try {
-    const tagIds = [];
-    for (const tagName of tagNames) {
-      const tag = await TagModel.findOne({
-        tagName,
-        createdBy: userObjectId,
-      });
-      if (tag) {
-        tagIds.push(tag._id);
-      }
-    }
-    return tagIds;
-  } catch (error) {
-    console.error("Error fetching/creating tag ObjectIds:", error);
-    return [];
-  }
-}
-
-// Helper function to transform tags for frontend
-function transformTagsForFrontend(tags: any[]): any[] {
-  if (!tags || !Array.isArray(tags)) return [];
-
-  return tags
-    .map((tag) => {
-      if (typeof tag === "string") {
-        return tag;
-      } else if (tag && typeof tag === "object" && "tagName" in tag) {
-        return {
-          _id: tag._id,
-          tagName: tag.tagName,
-          color: tag.color,
-        };
-      } else {
-        return String(tag || "");
-      }
-    })
-    .filter(Boolean);
-}
-
-// GET /dashboard/contacts
-router.get("/contacts", async (req: AuthRequest, res) => {
+// GET /dashboard - Main dashboard endpoint that returns all data
+router.get("/", async (req: AuthRequest, res) => {
   try {
     const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
-    const { search, tag, sortBy = "createdAt", sortOrder = "desc", page = "1", limit = "50" } = req.query;
+    
+    // Fetch all dashboard data in parallel
+    const [contacts, activities, tags] = await Promise.all([
+      // Get recent contacts
+      ContactModel.find({ createdBy: userObjectId })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .populate('tags', 'tagName color')
+        .lean(),
+      
+      // Get recent activities
+      ActivityModel.find({ user: userObjectId })
+        .sort({ timestamp: -1 })
+        .limit(10)
+        .lean(),
+      
+      // Get tags
+      TagModel.find({ createdBy: userObjectId })
+        .sort({ usageCount: -1 })
+        .lean()
+    ]);
 
-    const filter: any = { createdBy: userObjectId };
+    // Calculate stats
+    const totalContacts = await ContactModel.countDocuments({ createdBy: userObjectId });
+    const totalActivities = await ActivityModel.countDocuments({ user: userObjectId });
+    const totalTags = await TagModel.countDocuments({ createdBy: userObjectId });
 
-    // Search functionality
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-        { company: { $regex: search, $options: "i" } },
-        { phone: { $regex: search, $options: "i" } },
-        { notes: { $regex: search, $options: "i" } },
-      ];
-    }
+    // Transform data to match frontend expectations
+    // Generate contactsByCompany distribution (exactly 5 companies)
+    const companyAggregation = await ContactModel.aggregate([
+      { $match: { createdBy: userObjectId } },
+      { 
+        $group: { 
+          _id: { $ifNull: ["$company", "No Company"] }, 
+          count: { $sum: 1 } 
+        } 
+      },
+      { $sort: { count: -1 } },
+      { $limit: 5 } // Exactly 5 companies as requested
+    ]);
 
-    // Tag filter
-    if (tag) {
-      const tagDoc = await TagModel.findOne({
-        tagName: tag,
-        createdBy: userObjectId,
+    // Ensure we always have data - if less than 5 companies, fill with sample data
+    const contactsByCompany = [];
+    companyAggregation.forEach(item => {
+      contactsByCompany.push({
+        company: item._id || "No Company",
+        contacts: item.count
       });
-      if (tagDoc) {
-        filter.tags = { $in: [tagDoc._id] };
-      }
+    });
+
+    // If we have less than 5 companies, pad with zeros for better chart display
+    while (contactsByCompany.length < 5) {
+      contactsByCompany.push({
+        company: `Company ${contactsByCompany.length + 1}`,
+        contacts: 0
+      });
     }
 
-    const sortObj: any = {};
-    sortObj[sortBy as string] = sortOrder === "asc" ? 1 : -1;
-    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    const totalCount = await ContactModel.countDocuments(filter);
+    // Transform activities for timeline (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    let contactsData;
-    try {
-      contactsData = await ContactModel.find(filter)
-        .populate("tags", "tagName color")
-        .populate("createdBy", "name email")
-        .sort(sortObj)
-        .skip(skip)
-        .limit(parseInt(limit as string))
-        .lean();
-    } catch (populateError) {
-      console.warn("Population failed, falling back to basic query:", populateError);
-      contactsData = await ContactModel.find(filter)
-        .sort(sortObj)
-        .skip(skip)
-        .limit(parseInt(limit as string))
-        .lean();
+    const activityTimelineData = await ActivityModel.aggregate([
+      { 
+        $match: { 
+          user: userObjectId,
+          timestamp: { $gte: sevenDaysAgo } // Only last 7 days
+        } 
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id": 1 } } // Ascending order for timeline
+    ]);
+
+    // Create a complete 7-day timeline (even if some days have 0 activities)
+    const activityTimeline = [];
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateString = date.toISOString().split('T')[0];
+      
+      const existingData = activityTimelineData.find(item => item._id === dateString);
+      activityTimeline.push({
+        date: dateString,
+        day: 7 - i, // Day number 1-7
+        activities: existingData ? existingData.count : 0
+      });
     }
 
-    const transformedContacts = contactsData.map((contact) => ({
-      ...contact,
-      tags: transformTagsForFrontend(contact.tags || []),
+    // Transform tags for distribution with better color handling
+    const tagDistribution = tags.map((tag: any, index: number) => ({
+      name: tag.tagName,
+      value: tag.usageCount || 0,
+      color: tag.color || [
+        '#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6', 
+        '#EC4899', '#06B6D4', '#84CC16', '#F97316', '#6366F1'
+      ][index % 10] // Cycle through predefined colors
     }));
 
-    const availableTags = await TagModel.find({ createdBy: userObjectId })
-      .sort({ tagName: 1 })
-      .lean();
-
-    return res.json({
-      success: true,
-      contacts: transformedContacts,
-      availableTags,
-      pagination: {
-        currentPage: parseInt(page as string),
-        totalPages: Math.ceil(totalCount / parseInt(limit as string)),
-        totalCount,
-        hasMore: skip + contactsData.length < totalCount,
-      }
-    });
-  } catch (error) {
-    console.error("Error fetching contacts:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch contacts",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
-
-// POST /dashboard/contacts
-router.post("/contacts", async (req: AuthRequest, res) => {
-  try {
-    const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
-
-    // Handle tag creation/updating
-    if (req.body.tags && req.body.tags.length > 0) {
-      for (const tagName of req.body.tags) {
-        await TagModel.findOneAndUpdate(
-          { tagName },
-          {
-            $inc: { usageCount: 1 },
-            $setOnInsert: {
-              color: "#3B82F6",
-              createdBy: userObjectId,
-              createdAt: new Date(),
-            },
-            updatedAt: new Date(),
-          },
-          { upsert: true, new: true }
-        );
-      }
-    }
-
-    const tagIds = await getTagObjectIds(req.body.tags || [], userObjectId);
-
-    const newContact = await ContactModel.create({
-      ...req.body,
-      tags: tagIds,
-      createdBy: userObjectId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      lastInteraction: new Date(),
-    });
-
-    const populatedContact = await ContactModel.findById(newContact._id)
-      .populate("tags", "tagName color")
-      .populate("createdBy", "name email")
-      .lean();
-
-    // Log activity
-    await ActivityModel.create({
-      user: userObjectId,
-      action: "Created contact",
-      entityType: "Contact",
-      entityId: newContact._id,
-      entityName: newContact.name,
-      timestamp: new Date(),
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "Contact created successfully",
-      contact: populatedContact,
-    });
-  } catch (error) {
-    console.error("Error creating contact:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create contact",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
-
-// PUT /dashboard/contacts/:id
-router.put("/contacts/:id", async (req: AuthRequest, res) => {
-  try {
-    const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
-    const contactId = req.params.id;
-
-    const contact = await ContactModel.findOne({
-      _id: contactId,
-      createdBy: userObjectId,
-    });
-
-    if (!contact) {
-      return res.status(404).json({
-        success: false,
-        message: "Contact not found",
-      });
-    }
-
-    // Handle tag updates
-    if (req.body.tags && req.body.tags.length > 0) {
-      for (const tagName of req.body.tags) {
-        await TagModel.findOneAndUpdate(
-          { tagName },
-          {
-            $inc: { usageCount: 1 },
-            $setOnInsert: {
-              color: "#3B82F6",
-              createdBy: userObjectId,
-              createdAt: new Date(),
-            },
-            updatedAt: new Date(),
-          },
-          { upsert: true, new: true }
-        );
-      }
-    }
-
-    const tagIds = await getTagObjectIds(req.body.tags || [], userObjectId);
-
-    const updatedContact = await ContactModel.findByIdAndUpdate(
-      contactId,
-      {
-        ...req.body,
-        tags: tagIds,
-        updatedAt: new Date(),
+    const dashboardData = {
+      stats: {
+        totalContacts,
+        totalActivities,
+        totalTags,
+        recentActivityCount: activities.length
       },
-      { new: true }
-    )
-      .populate("tags", "tagName color")
-      .populate("createdBy", "name email");
+      contactsByCompany: contactsByCompany,
+      activityTimeline: activityTimeline,
+      tagDistribution: tagDistribution,
+      // Additional data for dashboard components
+      recentContacts: contacts.slice(0, 5), // Last 5 contacts
+      recentActivities: activities.slice(0, 10), // Last 10 activities
+      topTags: tags.slice(0, 5) // Top 5 most used tags
+    };
 
-    // Log activity
-    await ActivityModel.create({
-      user: userObjectId,
-      action: "Updated contact",
-      entityType: "Contact",
-      entityId: contact._id,
-      entityName: contact.name,
-      timestamp: new Date(),
-    });
-
-    return res.json({
+    res.json({
       success: true,
-      message: "Contact updated successfully",
-      contact: updatedContact,
+      data: dashboardData
     });
   } catch (error) {
-    console.error("Error updating contact:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to update contact",
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
-
-// DELETE /dashboard/contacts/:id
-router.delete("/contacts/:id", async (req: AuthRequest, res) => {
-  try {
-    const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
-    const contactId = req.params.id;
-
-    const contact = await ContactModel.findOne({
-      _id: contactId,
-      createdBy: userObjectId,
-    });
-
-    if (!contact) {
-      return res.status(404).json({
-        success: false,
-        message: "Contact not found",
-      });
-    }
-
-    await ContactModel.findByIdAndDelete(contactId);
-
-    // Log activity
-    await ActivityModel.create({
-      user: userObjectId,
-      action: "Deleted contact",
-      entityType: "Contact",
-      entityId: contact._id,
-      entityName: contact.name,
-      timestamp: new Date(),
-    });
-
-    return res.json({
-      success: true,
-      message: "Contact deleted successfully",
-    });
-  } catch (error) {
-    console.error("Error deleting contact:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to delete contact",
-      error: error instanceof Error ? error.message : "Unknown error",
+    console.error("Dashboard error:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to fetch dashboard data" 
     });
   }
 });
@@ -328,23 +150,56 @@ router.delete("/contacts/:id", async (req: AuthRequest, res) => {
 router.get("/activities", async (req: AuthRequest, res) => {
   try {
     const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
-    const { page = "1", limit = "20" } = req.query;
+    const { 
+      page = "0", 
+      limit = "20", 
+      dateRange = "all",
+      activityType = "all",
+      userId = "all"
+    } = req.query;
 
-    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-    const totalCount = await ActivityModel.countDocuments({ user: userObjectId });
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const skip = Math.max(0, pageNum * limitNum); // Ensure skip is never negative
+    
+    // Build filter query
+    const filter: any = { user: userObjectId };
 
-    const activities = await ActivityModel.find({ user: userObjectId })
+    // Date range filter
+    if (dateRange !== "all") {
+      const days = parseInt(dateRange.toString().replace('d', ''));
+      if (!isNaN(days)) {
+        const dateThreshold = new Date();
+        dateThreshold.setDate(dateThreshold.getDate() - days);
+        filter.timestamp = { $gte: dateThreshold };
+      }
+    }
+
+    // Activity type filter
+    if (activityType !== "all") {
+      filter.action = activityType;
+    }
+
+    // User filter (if different user is selected - though typically this would be the logged-in user)
+    if (userId !== "all" && userId !== req.user!._id) {
+      filter.user = new mongoose.Types.ObjectId(userId as string);
+    }
+
+    const totalCount = await ActivityModel.countDocuments(filter);
+
+    const activities = await ActivityModel.find(filter)
       .sort({ timestamp: -1 })
       .skip(skip)
-      .limit(parseInt(limit as string))
+      .limit(limitNum)
+      .populate('user', '_id name email')
       .lean();
 
     return res.json({
       success: true,
       activities,
       pagination: {
-        currentPage: parseInt(page as string),
-        totalPages: Math.ceil(totalCount / parseInt(limit as string)),
+        currentPage: pageNum,
+        totalPages: Math.ceil(totalCount / limitNum),
         totalCount,
         hasMore: skip + activities.length < totalCount,
       },
@@ -424,6 +279,78 @@ router.post("/tags", async (req: AuthRequest, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to create tag",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// PUT /dashboard/tags/:id - Update a tag
+router.put("/tags/:id", async (req: AuthRequest, res) => {
+  try {
+    const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
+    const tagId = req.params.id;
+    const { tagName, color } = req.body;
+
+    const updatedTag = await TagModel.findOneAndUpdate(
+      { _id: tagId, createdBy: userObjectId },
+      {
+        tagName,
+        color,
+        updatedAt: new Date(),
+      },
+      { new: true }
+    );
+
+    if (!updatedTag) {
+      return res.status(404).json({
+        success: false,
+        message: "Tag not found or access denied",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Tag updated successfully",
+      tag: updatedTag,
+    });
+  } catch (error) {
+    console.error("Error updating tag:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update tag",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// DELETE /dashboard/tags/:id - Delete a tag
+router.delete("/tags/:id", async (req: AuthRequest, res) => {
+  try {
+    const userObjectId = new mongoose.Types.ObjectId(req.user!._id);
+    const tagId = req.params.id;
+
+    const deletedTag = await TagModel.findOneAndDelete({
+      _id: tagId,
+      createdBy: userObjectId,
+    });
+
+    if (!deletedTag) {
+      return res.status(404).json({
+        success: false,
+        message: "Tag not found or access denied",
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Tag deleted successfully",
+      tag: deletedTag,
+    });
+  } catch (error) {
+    console.error("Error deleting tag:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete tag",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }

@@ -273,6 +273,60 @@ Provide specific, actionable recommendations with clear next steps.
     // Random fallback response
     return fallbackResponses[Math.floor(Math.random() * fallbackResponses.length)];
   }
+
+  /**
+   * Legacy method for backward compatibility
+   */
+  static async generateInsights(userId: string): Promise<string> {
+    return await this.generateCRMInsights(userId);
+  }
+
+  /**
+   * Suggest tags for contact data
+   */
+  static async suggestTags(contactData: any): Promise<string[]> {
+    try {
+      const { name, email, company, phone, notes } = contactData;
+      
+      const prompt = `
+Based on the following contact information, suggest 3-5 relevant tags that would help categorize and organize this contact:
+
+Name: ${name || 'Not provided'}
+Email: ${email || 'Not provided'}
+Company: ${company || 'Not provided'}
+Phone: ${phone || 'Not provided'}
+Notes: ${notes || 'Not provided'}
+
+Please suggest practical, concise tags (1-2 words each) that would be useful for CRM organization.
+Examples: "Lead", "Customer", "Vendor", "Partner", "Technical", "Sales", "Support", etc.
+
+Return only the tag names, separated by commas.`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 100,
+        temperature: 0.3
+      });
+
+      const suggestedTagsText = response.choices?.[0]?.message?.content || '';
+      const tags = suggestedTagsText
+        .split(',')
+        .map(tag => tag.trim())
+        .filter(tag => tag.length > 0)
+        .slice(0, 5); // Limit to 5 tags
+
+      return tags;
+    } catch (error) {
+      console.error('Error suggesting tags:', error);
+      // Return default tags based on contact data
+      const defaultTags = [];
+      if (contactData.company) defaultTags.push('Business');
+      if (contactData.email && contactData.email.includes('@')) defaultTags.push('Contact');
+      if (contactData.notes) defaultTags.push('Noted');
+      return defaultTags.length > 0 ? defaultTags : ['General'];
+    }
+  }
 }
 
 export default EnhancedAIService;

@@ -7,6 +7,11 @@ export interface IActivity extends Document {
   entityType: string;
   entityId: Types.ObjectId;
   entityName: string;
+  details?: {
+    before?: Record<string, string>;
+    after?: Record<string, string>;
+    metadata?: Record<string, string>;
+  };
   timestamp: Date;
 }
 
@@ -16,6 +21,14 @@ const ActivitySchema = new Schema<IActivity>({
   entityType: { type: String, required: true },
   entityId: { type: Schema.Types.ObjectId, required: true },
   entityName: { type: String, required: true },
+  details: {
+    type: {
+      before: { type: Map, of: String },
+      after: { type: Map, of: String },
+      metadata: { type: Map, of: String }
+    },
+    required: false
+  },
   timestamp: { type: Date, default: Date.now },
 });
 
