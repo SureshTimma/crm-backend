@@ -1,11 +1,13 @@
 # CRM Backend Migration Guide: Next.js to Express
 
 ## Overview
+
 This guide will help you migrate your complete backend from the Next.js monolithic CRM system to a dedicated Express.js backend server.
 
 ## Current Architecture Analysis
 
 ### Next.js Project Structure (crm-system)
+
 ```
 src/
 ├── app/api/              # Next.js API routes (TO BE MIGRATED)
@@ -16,6 +18,7 @@ src/
 ```
 
 ### Express Project Structure (crm-backend)
+
 ```
 src/
 └── index.ts              # Basic Express server (EXTEND)
@@ -26,6 +29,7 @@ src/
 ### Phase 1: Environment Setup
 
 #### 1.1 Update Express Backend Dependencies
+
 Update your `crm-backend/package.json` with all backend-related dependencies:
 
 ```json
@@ -70,6 +74,7 @@ Update your `crm-backend/package.json` with all backend-related dependencies:
 ```
 
 #### 1.2 Create Environment Configuration
+
 Create `.env` file in `crm-backend/`:
 
 ```env
@@ -105,6 +110,7 @@ FRONTEND_URL=http://localhost:3000
 ### Phase 2: Directory Structure Setup
 
 #### 2.1 Create Backend Directory Structure
+
 Create the following folders in `crm-backend/src/`:
 
 ```
@@ -121,6 +127,7 @@ src/
 ```
 
 Commands to create directories:
+
 ```powershell
 # Navigate to crm-backend
 cd "D:\My Projects\crm-backend\src"
@@ -132,15 +139,18 @@ New-Item -ItemType Directory -Path "config", "controllers", "middleware", "model
 ### Phase 3: Database Migration
 
 #### 3.1 Copy Database Configuration
+
 Copy these files from `crm-system/src/DB/` to `crm-backend/src/config/`:
 
 1. **MongoDB Connection** (`MongoConnect.ts` → `database.ts`)
 2. **Database Schemas** (`MongoSchema.ts` → `../models/index.ts`)
 
 #### 3.2 Adapt MongoDB Connection for Express
+
 Transform the Next.js MongoDB connection to Express-compatible version:
 
 **File: `crm-backend/src/config/database.ts`**
+
 ```typescript
 import mongoose from "mongoose";
 import dotenv from "dotenv";
@@ -150,7 +160,9 @@ dotenv.config();
 const MONGODB_URI = process.env.MONGODB_URI;
 
 if (!MONGODB_URI) {
-  throw new Error("Please define the MONGODB_URI environment variable in .env file");
+  throw new Error(
+    "Please define the MONGODB_URI environment variable in .env file"
+  );
 }
 
 export const connectDatabase = async (): Promise<void> => {
@@ -179,6 +191,7 @@ export const disconnectDatabase = async (): Promise<void> => {
 ```
 
 #### 3.3 Copy and Adapt Database Models
+
 Copy the schemas from `MongoSchema.ts` to `crm-backend/src/models/`:
 
 **File: `crm-backend/src/models/index.ts`** (Copy the entire MongoSchema.ts content and adapt export structure)
@@ -186,6 +199,7 @@ Copy the schemas from `MongoSchema.ts` to `crm-backend/src/models/`:
 ### Phase 4: Service Layer Migration
 
 #### 4.1 Copy Utility Services
+
 Copy these files and adapt them:
 
 1. **AI Service**: `crm-system/src/lib/aiService.ts` → `crm-backend/src/services/aiService.ts`
@@ -193,9 +207,11 @@ Copy these files and adapt them:
 3. **Cloudinary**: `crm-system/src/lib/cloudinary.ts` → `crm-backend/src/services/cloudinary.ts`
 
 #### 4.2 Create Authentication Service
+
 Create `crm-backend/src/services/authService.ts` based on Firebase admin logic from Next.js routes.
 
 #### 4.3 Firebase Admin Setup
+
 Create `crm-backend/src/config/firebase.ts`:
 
 ```typescript
@@ -230,9 +246,11 @@ export const verifyFirebaseToken = async (idToken: string) => {
 ### Phase 5: API Routes Migration
 
 #### 5.1 Authentication Routes
+
 Create `crm-backend/src/routes/auth.ts`:
 
 Transform these Next.js API routes:
+
 - `api/auth/login/route.ts` → `/auth/login` (POST)
 - `api/auth/register/route.ts` → `/auth/register` (POST)
 - `api/auth/logout/route.ts` → `/auth/logout` (POST)
@@ -241,24 +259,30 @@ Transform these Next.js API routes:
 - `api/auth/settings/password/route.ts` → `/auth/settings/password` (PUT)
 
 #### 5.2 Dashboard Routes
+
 Create `crm-backend/src/routes/dashboard.ts`:
 
 Transform these routes:
+
 - `api/(dashboard)/contacts/route.ts` → `/dashboard/contacts` (GET, POST, PUT, DELETE)
 - `api/(dashboard)/activities/route.ts` → `/dashboard/activities` (GET, POST)
 - `api/(dashboard)/tags/route.ts` → `/dashboard/tags` (GET, POST, PUT, DELETE)
 - `api/(dashboard)/dashboard/route.ts` → `/dashboard/stats` (GET)
 
 #### 5.3 Chat Routes
+
 Create `crm-backend/src/routes/chat.ts`:
 
 Transform these routes:
+
 - `api/chat/route.ts` → `/chat` (POST)
 - `api/conversations/route.ts` → `/conversations` (GET, POST)
 - `api/conversations/[conversationId]/route.ts` → `/conversations/:id` (GET, DELETE)
 
 #### 5.4 Additional Routes
+
 Create additional route files:
+
 - `crm-backend/src/routes/contacts.ts` → `/contacts/*`
 - `crm-backend/src/routes/ai.ts` → `/ai-insights` (POST)
 - `crm-backend/src/routes/socket.ts` → WebSocket handling
@@ -266,11 +290,13 @@ Create additional route files:
 ### Phase 6: Middleware Migration
 
 #### 6.1 Authentication Middleware
+
 Create `crm-backend/src/middleware/auth.ts`:
 
 Transform the `requireAuth` function from `crm-system/src/lib/auth.ts` to Express middleware.
 
 #### 6.2 Error Handling Middleware
+
 Create `crm-backend/src/middleware/errorHandler.ts`:
 
 ```typescript
@@ -295,11 +321,13 @@ export const errorHandler = (
 ```
 
 #### 6.3 CORS Middleware
+
 Configure CORS for frontend communication.
 
 ### Phase 7: Socket.IO Migration
 
 #### 7.1 Setup Socket.IO Server
+
 Modify `crm-backend/src/index.ts` to include Socket.IO:
 
 ```typescript
@@ -332,10 +360,12 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
@@ -353,17 +383,24 @@ app.use("/api/ai-insights", aiRoutes);
 // Socket.IO handling
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
-  
+
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.id);
   });
 });
 
 // Error handling
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
-  res.status(500).json({ error: "Something went wrong!" });
-});
+app.use(
+  (
+    err: Error,
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    console.error(err.stack);
+    res.status(500).json({ error: "Something went wrong!" });
+  }
+);
 
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
@@ -373,6 +410,7 @@ server.listen(PORT, () => {
 ### Phase 8: File Upload Handling
 
 #### 8.1 Setup Multer for File Uploads
+
 Create `crm-backend/src/middleware/upload.ts`:
 
 ```typescript
@@ -389,7 +427,7 @@ export const upload = multer({
   fileFilter: (req, file, cb) => {
     const allowedTypes = [".csv", ".xlsx", ".xls"];
     const fileExt = path.extname(file.originalname).toLowerCase();
-    
+
     if (allowedTypes.includes(fileExt)) {
       cb(null, true);
     } else {
@@ -402,15 +440,18 @@ export const upload = multer({
 ### Phase 9: Frontend Updates
 
 #### 9.1 Update API Base URL
+
 In your Next.js frontend, update all API calls to point to the Express backend:
 
 **Before:**
+
 ```typescript
 // Frontend API calls
 fetch("/api/auth/login", { ... })
 ```
 
 **After:**
+
 ```typescript
 // Frontend API calls
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
@@ -418,13 +459,17 @@ fetch(`${API_BASE_URL}/api/auth/login`, { ... })
 ```
 
 #### 9.2 Update Environment Variables
+
 Add to `crm-system/.env.local`:
+
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:5000
 ```
 
 #### 9.3 Remove Backend Code from Frontend
+
 After migration is complete, remove these directories from `crm-system`:
+
 - `src/app/api/` (all API routes)
 - `src/DB/` (database configuration)
 - `src/lib/aiService.ts` and `src/lib/aiContext.ts`
@@ -433,6 +478,7 @@ After migration is complete, remove these directories from `crm-system`:
 ### Phase 10: Testing & Validation
 
 #### 10.1 Testing Checklist
+
 1. **Database Connection**: Verify MongoDB connects successfully
 2. **Authentication**: Test login, register, logout endpoints
 3. **CRUD Operations**: Test all contact, tag, activity operations
@@ -442,6 +488,7 @@ After migration is complete, remove these directories from `crm-system`:
 7. **Error Handling**: Test error scenarios
 
 #### 10.2 Development Workflow
+
 1. Start MongoDB (if local)
 2. Start Express backend: `cd crm-backend && npm run dev`
 3. Start Next.js frontend: `cd crm-system && npm run dev`
@@ -450,17 +497,20 @@ After migration is complete, remove these directories from `crm-system`:
 ### Phase 11: Deployment Considerations
 
 #### 11.1 Backend Deployment
+
 - Use PM2 for process management
 - Set up environment variables in production
 - Configure reverse proxy (Nginx)
 - Set up SSL certificates
 
 #### 11.2 Database Migration
+
 - Export data from development MongoDB
 - Import to production MongoDB
 - Update connection strings
 
 #### 11.3 Frontend Deployment
+
 - Update `NEXT_PUBLIC_API_URL` for production
 - Build and deploy frontend separately
 
